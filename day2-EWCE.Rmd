@@ -1,0 +1,801 @@
+---
+title: "Session 2: Enriching Genes in Cell Types with EWCE"
+output:
+  pdf_document
+header-includes:
+  # Older TeX Live (pre-2023) graphicx rejects the alt= key that pandoc 3 emits.
+  - \makeatletter\define@key{Gin}{alt}{}\makeatother
+---
+
+```{R setup, include=FALSE}
+# Messages and warnings are hidden in this PDF to save space. You may see
+# some in your console; ask a TA if you are unsure whether one matters.
+knitr::opts_chunk$set(message = FALSE, error = FALSE, warning = FALSE)
+```
+
+# Objective
+
+By the end of today you should be able to explain and apply three ideas:
+
+1. **Expression versus specificity**, and how a cell type reference is built.
+2. **A fair null comparison** for a selected gene list: what should a random
+   list represent, given how the real list was chosen?
+3. **Interpreting enrichment** and justifying what analysis should come next.
+
+Sections marked **Core** are for everyone; **Optional** sections are
+extensions.
+
+# Background
+
+In many brain disorders, it is not known which cell types are most involved.
+Changes are often seen in many cell types, and it is hard to tell which are
+early contributors and which are responses to disease.
+
+Several kinds of evidence are relevant, and they answer different questions:
+
+* **Inherited risk**: genes near DNA variants associated with disease risk,
+  for example from genome-wide association studies (GWAS).
+* **Disease-associated expression**: genes whose expression differs in
+  patients' tissue. These changes can be causes, consequences or both.
+* **Causal mechanism**: how a gene or cell type actually contributes to
+  disease. This needs experiments, not just association.
+
+Expression Weighted Celltype Enrichment (EWCE) [1] asks whether the genes in a
+list (for example, genes at Alzheimer's disease risk loci [2]) tend to be more
+**specific** to a particular cell type than random lists of genes would be. If
+a risk-gene list is enriched in a cell type, that result can help prioritise
+the cell type for further investigation. It does **not** on its own show that
+the cell type causes the disease, or identify a mechanism. The interpretation
+depends on how genes were selected, the background used for comparison, and
+which cells the reference contains.
+
+# Part A (Core): from your Day 1 reference to a brain reference
+
+On Day 1 you built a small reference from your PBMC cells: the mean expression
+of each gene in each cell type, and a specificity value (mean in one cell type
+divided by the sum across cell types). EWCE uses the same idea, stored in a
+**CellTypeDataset (CTD)**. For questions about brain disease, a reference
+from brain is more relevant than one from blood.
+
+## 1. Set up
+
+  * Go to `File` > `New Project...` > `Existing Directory` > `Browse...`,
+    choose the `day2` folder from the worksheets you downloaded, then
+    `Create Project`. The gene list files used later (`autism_genes.csv` and
+    the `gene-lists` folder) are in that folder, so R can find them.
+  * Run the code below to load EWCE and set a random seed so that results
+    involving random sampling can be reproduced.
+
+```{r pkgs, results='hide', include=TRUE}
+library(EWCE)
+set.seed(1234)
+
+# EWCE's example data are downloaded once and kept in a folder on your
+# computer (a "cache"). This line lets R create that folder without asking.
+ExperimentHub::setExperimentHubOption("ASK", FALSE)
+```
+
+*If R still asks "create directory? (yes/no)", type `yes` and press Enter.
+Answering `no` works, but the data are then downloaded again every session.*
+
+## 2. Load the reference
+
+```{r input, results='hide', include=TRUE}
+ctd <- ewceData::ctd()
+```
+
+*If this fails with a connection error, the data may already be on your
+computer from setup: run `ctd <- ewceData::ctd(localHub = TRUE)` instead. Do
+the same for `example_genelist()` below.*
+
+This example CTD was built from mouse single-cell data from the somatosensory
+cortex and hippocampus (CA1 region) [3]. It has two levels: level 1 has 7 broad
+cell types; level 2 has 48 subtypes.
+
+![CTD Data Structure](../assets/day2/ctd_schematic.png)
+  
+  * Levels are accessible through indexing e.g. [[1]], with data frames loaded with $NAME.
+  * Indexing in R can be done using `table[row_name, column_name]`, with the whole row or column returned if either is blank. 
+  * This means that specific rows, columns or items can be accessed by indexing with the gene or cell type names.
+  * Remember that `|>` is the pipe operator, allowing us to pass data to a given function.
+  
+```{r metadata, include=TRUE}
+# Get the table names from level 1 of the CTD
+names(ctd[[1]])  
+# Get the column names (cell types) of the mean expression table from level 1
+ctd[[1]]$mean_exp |> colnames()
+# Get the column names (sub-cell types) of the mean expression table from level 2
+ctd[[2]]$mean_exp |> colnames()
+# Get the mean expression of Wnt5a in all level 1 cell types
+ctd[[1]]$mean_exp['Wnt5a',]
+```
+
+**What is missing?** This reference has no human cells, no cells from people
+with a disease, only two brain regions, and some broad groupings (for example
+astrocytes and ependymal cells together). Keep this in mind when interpreting
+your results.
+
+### Q1. Which cell type has the highest expression of Wnt5a?
+
+  1. Astrocytes
+  2. Oligodendrocytes
+  3. Interneurons
+
+### Q2. Which of these three genes has the highest mean expression in microglia? (Write your own code.)
+
+  1. Tmem119
+  2. Jam2
+  3. Cd200
+
+## 3. Expression versus specificity
+
+Here are two genes compared in terms of mean expression and specificity in
+level 1 cell types:
+
+```{r expr_vs_spec, include=TRUE}
+genes <- c("Actb", "Cx3cr1")
+round(ctd[[1]]$mean_exp[genes, ], 2)
+round(ctd[[1]]$specificity[genes, ], 2)
+```
+
+```{r plot_mean, fig.height=3, include=TRUE}
+# Plot the mean expression of the two genes in our gene list.
+# show_plot = FALSE stops plot_ctd() drawing the plot itself; R then shows the
+# plot it returns once (otherwise you would see it twice).
+EWCE::plot_ctd(ctd = ctd, level = 1, genes = genes, metric = "mean_exp",
+               show_plot = FALSE)
+```
+
+```{r plot_spec, fig.height=3, include=TRUE}
+# Plot the specificity of the two genes in our gene list
+EWCE::plot_ctd(ctd = ctd, level = 1, genes = genes, metric = "specificity",
+               show_plot = FALSE)
+```
+
+**Discuss:** Actb has a much higher mean in microglia than Cx3cr1. Which gene
+is more informative about microglia, and why? (Compare with B2M and MS4A1 in
+your Day 1 reference.)
+
+### Q3. Which of these is true about specificity vs mean expression?
+
+ 1. Specificity values across cell types for a given gene sum to 1, while mean expression can have any total.
+ 2. Specificity and mean expression are calculated using a different number of cells.
+ 3. Specificity values have a larger range than mean expression values.
+
+Specificity also exists at level 2:
+
+```{r plot_spec_l2, include=TRUE, fig.width=12}
+EWCE::plot_ctd(ctd = ctd, level = 2, genes = c("Sox10", "Hexb", "Hprt"),
+               metric = "specificity", show_plot = FALSE)
+```
+
+### Q4. Which of these genes has the highest specificity to a single level 2 subtype?
+
+  1. Sox10
+  2. Hexb
+  3. Hprt
+
+
+# Part B (Core): where did the gene list come from?
+
+EWCE needs a target gene list. Before any statistics, ask how the genes entered
+the list: that decides what a fair comparison is. Our example contains human
+genes at Alzheimer's disease risk loci (see `GENE-LISTS.md` for more info).
+
+```{r gene_list, include=TRUE}
+# load the original gene list from ewceData, which we don't change.
+hits_original <- ewceData::example_genelist()
+length(hits_original)
+hits_original
+```
+
+## Practising with vectors (on a copy)
+
+To practise R, we will edit a **copy** of our list of genes. In a real analysis, 
+adding or removing genes after seeing results would change the question we're
+asking, so we need to justify and record these *before* we look at our data.
+
+```{r list_ops1, include=TRUE}
+practice <- hits_original
+
+# Add a gene to the end
+practice <- c(practice, "LILRA5")
+practice
+```
+
+```{r list_ops2, include=TRUE}
+
+# Replace the third item
+practice[3] <- "SNX8"
+practice
+```
+
+```{r list_ops3, include=TRUE}
+# Remove the second item: a negative index drops that position
+practice[-2]
+```
+
+```{r list_ops4, include=TRUE}
+
+# Remove a gene by name: keep everything that is NOT "APOE"
+practice[practice != "APOE"]
+
+# This shows that the original is unchanged
+identical(hits_original, ewceData::example_genelist())
+```
+
+### Q5. Which line returns `practice` without the gene "CLU"?
+
+  1. `practice[-"CLU"]`
+  2. `practice[practice != "CLU"]`
+  3. `practice[practice == "CLU"]`
+
+## Which genes can we use?
+
+Our list uses human symbols; the reference uses mouse symbols. For the
+demonstration below we simply convert mouse symbols to upper case.
+**This is simpler than the true mapping between species, but works for now** - 
+some human genes have no single mouse counterpart, and some symbols differ. EWCE
+itself uses a database of matching genes between species (orthologues).
+
+```{r check-gene-list, include=TRUE}
+# Before any comparison, check the target list against the complete set of
+# genes that could have been selected (the 'universe'). This will make sure
+# we don't accidentally remove genes without realising (don't worry too much
+# about the exact implementation here).
+
+check_gene_list <- function(target, universe) {
+  target <- as.character(target)
+  reason <- rep(NA_character_, length(target))
+  reason[is.na(target) | target == ""] <- "missing"
+  reason[is.na(reason) & duplicated(target)] <- "duplicate"
+  reason[is.na(reason) & !(target %in% universe)] <- "not in universe"
+  usable <- target[is.na(reason)]
+  list(
+    usable = usable,
+    removed = data.frame(gene = target[!is.na(reason)],
+                         reason = reason[!is.na(reason)]),
+    counts = c(input = length(target), usable = length(usable),
+               removed = sum(!is.na(reason)))
+  )
+}
+```
+
+Now, we can create a list of genes which we can compare our hits list to.
+```{r check_hits, include=TRUE}
+# Select the specificity of all genes in microglia
+spec_microglia <- ctd[[1]]$specificity[, "microglia"]
+# Get the gene names
+names(spec_microglia) <- toupper(names(spec_microglia))
+
+# Run our check_gene_list function to see whether our microglia genes
+# match our input gene list
+checked_hits <- check_gene_list(hits_original, universe = names(spec_microglia))
+checked_hits$counts
+checked_hits$removed
+```
+
+When you report a result, it is good to report how many genes went in, how
+many were used, and which were lost.
+
+
+# Part C (Core): define the fair comparison
+
+EWCE compares the target list with many **random** lists of the same length to
+see whether our target list is more specific to a given cell type than the
+random list. However, for this we need to decide *which* genes to use to create
+the background.
+
+Imagine a study that could only select genes from a 600-gene panel of genes
+expressed in brain. Genes only expressed elsewhere in the body would not be
+eligible. This would give different results to a study that uses 2000 genes
+from around the body.
+
+The below cell creates our synthetic dataset of genes with a score in a single
+cell type, and creates a brain gene list with **no** real enrichment compared to
+brain genes.
+
+```{r fair-background-data, include=TRUE}
+# This creates a synthetic universe of 2,000 genes with a score for a cell type.
+# Imagine a study that could only select genes from a 600-gene panel of genes
+# expressed in brain ('eligible'). Genes outside the panel could never have
+# entered the target list, and most of them have low scores in our brain cell
+# type.
+set.seed(42)
+n_all <- 2000
+synthetic <- data.frame(
+  gene = sprintf("syn_gene_%04d", seq_len(n_all)),
+  eligible = seq_len(n_all) <= 600
+)
+synthetic$score <- ifelse(synthetic$eligible,
+                          rbeta(n_all, 2, 4),      # eligible: mean ~0.33
+                          rbeta(n_all, 0.5, 8))    # others:   mean ~0.06
+scores <- setNames(synthetic$score, synthetic$gene)
+
+# The target list: 25 genes the study selected. All are eligible, and (because
+# we built the example) we know the selection did NOT depend on the score:
+# there is no real enrichment among eligible genes.
+eligible_genes <- synthetic$gene[synthetic$eligible]
+set.seed(7)
+target <- sample(eligible_genes, 25)
+```
+
+**Predict first (write it down):** if we draw random lists from *all* 2,000
+genes instead of only the 600 eligible genes, will our list look more unusual,
+less unusual, or the same? Why?
+
+ * Now, we define two functions to enable us to reusably run sampling and create
+enrichment p values.
+ * In programming, a function is a reusable block of code which performs a particular task.We define these in R with the form `function_name <- function(parameters){...}`.
+ * `sample_null()` draws random lists of the same length as the checked target
+ list without replacement.
+ * `mc_p()` counts how often a random list is at least as extreme as our target list.
+
+```{r sample-null, include=TRUE}
+# Mean score of random gene lists of the same length as the target list,
+# drawn WITHOUT replacement from the universe (as EWCE does).
+#   scores:   named numeric vector, one score per gene (e.g. specificity)
+#   universe: genes that a random list may contain
+#   n_genes:  length of the target list AFTER checking
+sample_null <- function(scores, universe, n_genes, n_sims) {
+  universe <- intersect(universe, names(scores))
+  stopifnot(n_genes >= 1, n_genes <= length(universe), n_sims >= 1)
+  replicate(n_sims, mean(scores[sample(universe, n_genes)]))
+}
+```
+
+```{r mc-p, include=TRUE}
+# Monte Carlo p-value: how often is a random list at least as extreme as the
+# observed list?  b / n can be exactly 0 when no random list reaches the
+# observed value; that does not mean the true probability is 0. Adding one to
+# the numerator and denominator, (b + 1) / (n + 1), counts the observed list
+# as one possible arrangement, so this never returns 0 (Phipson & Smyth 2010).
+mc_p <- function(null, observed) {
+  # b here refers to the number of sampled lists where the null gene list has a
+  # higher score than the observed gene list.
+  b <- sum(null >= observed)
+  n <- length(null)
+  c(exceedances = b, simulations = n, b_over_n = b / n,
+    b_plus_1_over_n_plus_1 = (b + 1) / (n + 1))
+}
+```
+
+```{r fair-background-check, include=TRUE}
+# Check how many of our genes are usable
+checked <- check_gene_list(target, universe = eligible_genes)
+checked$counts
+```
+
+```{r fair-background-compare, include=TRUE}
+# Take the mean score of our usable genes
+observed <- mean(scores[checked$usable])
+
+# Sample our null lists based on all genes
+null_all <- sample_null(scores, universe = names(scores),
+                        n_genes = length(checked$usable), n_sims = 1000)
+# Sample our null lists based on the brain genes only
+null_eligible <- sample_null(scores, universe = eligible_genes,
+                             n_genes = length(checked$usable), n_sims = 1000)
+# Create a table with our results from all genes and eligible only genes
+rbind(all_genes = mc_p(null_all, observed),
+      eligible_only = mc_p(null_eligible, observed))
+```
+Now, we can visualise the results against the mean scores of our gene list
+
+```{r fair-background-plot, fig.height=3.2, fig.cap="Comparing the same list against two different backgrounds. Red line: observed mean score.", include=TRUE}
+# make sure our x axis includes the observed mean
+xr <- range(c(null_all, null_eligible, observed))
+# Create a plot with two columns
+par(mfrow = c(1, 2))
+# histogram using all genes
+hist(null_all, breaks = 30, xlim = xr, main = "Random lists: all genes",
+     xlab = "Mean score of random list", col = "grey80")
+abline(v = observed, col = "red", lwd = 2)
+# histogram using all eligible genes
+hist(null_eligible, breaks = 30, xlim = xr,
+     main = "Random lists: eligible genes", xlab = "Mean score of random list",
+     col = "grey80")
+abline(v = observed, col = "red", lwd = 2)
+par(mfrow = c(1, 1))
+```
+
+**Discuss:**
+
+1. Which background matches how the list was selected? Justify your answer from
+   the selection process, not from which p-value is smaller.
+2. Against all genes, the list looks highly unusual. What is that comparison
+   really detecting?
+3. We built this example so that the selection did not depend on the score.
+   Which result reflects that?
+
+## How many random lists?
+
+```{r n_sims, include=TRUE}
+set.seed(1)
+for (n in c(100, 1000, 10000)) {
+  null_n <- sample_null(scores, eligible_genes, length(checked$usable), n)
+  print(round(mc_p(null_n, observed), 4))
+}
+```
+
+Increasing the number of random lists makes the estimate of the p-value more
+**precise**, but does not change the question being asked. Therefore this
+cannot fix an unfair test.
+
+If no random list reaches the observed value, `b/n` is 0. This does **not**
+mean the true probability is 0: with 100 random lists we can only say it is
+probably below about 1 in 100. The `(b + 1)/(n + 1)` estimate can never give 0
+and is a common, slightly conservative choice for this kind of test [4].
+
+
+# Part D (Core): the same idea on the real list
+
+Now we can use the same genes from part B in a real list in microglia. The target
+list and the random lists have the same length, and both come from the same 
+universe of reference genes.
+
+```{r handbuilt, include=TRUE}
+target_genes <- checked_hits$usable
+observed_real <- mean(spec_microglia[target_genes])
+
+null_real <- sample_null(spec_microglia, names(spec_microglia),
+                         n_genes = length(target_genes), n_sims = 1000)
+mc_p(null_real, observed_real)
+```
+
+```{r handbuilt_plot, fig.height=3.5}
+hist(null_real, breaks = 40,
+     xlim = range(c(null_real, observed_real)),   # never clip the observed value
+     main = "Microglia: random lists vs Alzheimer's list",
+     xlab = "Mean specificity of list")
+abline(v = observed_real, col = "red", lwd = 2)
+```
+
+### Q6. If you increase the number of random lists, which is true?
+
+  1. The p-value estimate becomes more precise.
+  2. The background becomes fairer.
+  3. The list becomes more enriched.
+
+### Q7. What does the p-value represent here?
+
+  1. The probability that the gene list is truly enriched for the cell type.
+  2. How often a random list from the chosen background is at least as extreme as ours, if the list were no more cell-type specific than a random list.
+  3. The probability that the given genes are expressed in the cell type.
+
+### Q8. Which assumption matters most for this comparison to be meaningful?
+
+  1. Specificity values must follow a Normal distribution.
+  2. The random lists must be drawn from genes that could have entered the target list.
+  3. The random means must follow a uniform distribution.
+
+**How this differs from the EWCE package.** The process is slightly more complex
+in the real package: in EWCE 1.16.0 (the version used for this workshop)
+the statistic is the *summed* specificity of the list in each cell type (for a
+fixed list length this ranks lists the same way as the mean); 
+as mentioned previously genes are matched properly between human and mouse with
+an orthologue database; random lists are drawn without replacement from the 
+background **plus** the target genes; and the reported p-value is `b / reps`,
+so it can be exactly 0.
+
+
+# Part E (Core): run EWCE
+
+```{r enrichment, results='hide', include=TRUE}
+set.seed(1234)    # same random draws whichever chunks you ran before
+reps <- 100       # use a small number for now
+annotLevel <- 1   # 1 = broad cell types, 2 = subtypes
+
+full_results <- EWCE::bootstrap_enrichment_test(sct_data = ctd,
+                                                sctSpecies = "mouse",
+                                                genelistSpecies = "human",
+                                                hits = hits_original,
+                                                reps = reps,
+                                                annotLevel = annotLevel,
+                                                verbose = FALSE)
+```
+
+```{r enrichment_table, include=TRUE}
+knitr::kable(full_results$results, digits = 3) #knitr::kable makes the output look nicer
+```
+
+Which of our genes did EWCE actually use?
+
+```{r ewce_mapping, include=TRUE}
+used <- unique(full_results$gene_data$gene)
+# Print the length of our gene list:
+length(used)
+# Print the original hits which were not used
+setdiff(hits_original, used)
+```
+
+**Read the output carefully:**
+
+* `p` is `b / reps`. A value of 0 means none of the `r reps` random lists was as
+  extreme; the true probability is probably below about 1 in `r reps`, not 0.
+  For a real research analysis we'd use many more repetitions (e.g. 10,000 or more),
+  and record the seed and version so that it's reproducible.
+* `q` corrects for testing 7 cell types (Benjamini-Hochberg false discovery
+  rate).
+* `sd_from_mean` is how many standard deviations the list's summed specificity
+  is above the mean of the random lists.
+
+### Q9. Which cell type shows significant enrichment for the Alzheimer's list in this run?
+
+  1. Astrocytes
+  2. Oligodendrocytes
+  3. Microglia
+
+```{r enrich_plot, fig.height=4, include=TRUE}
+plot_list <- EWCE::ewce_plot(total_res = full_results$results,
+                             mtc_method = "BH",
+                             ctd = ctd,
+                             make_dendro = TRUE)
+print(plot_list$withDendro)
+```
+
+The dendrogram groups cell types by the similarity of their specificity
+profiles.
+
+### Q10. Which cell type is most similar to microglia in this dendrogram?
+
+  1. Astrocytes
+  2. Interneurons
+  3. Endothelial mural cells
+
+
+# Part F (Core challenge): structured investigation
+
+Work in groups. Choose **one** of the following lists:
+
+ 1. Alzheimer's disease risk loci
+ 
+  * Access using `ewceData::example_genelist()`
+  * These are human gene symbols, see `GENE-LISTS.md` for more info.
+  
+ 2. Autism (Sanders et al. 2015 [5], 65 genes)
+ 
+  * Access these using `read.csv("autism_genes.csv")$Gene`
+  * These are human gene symbols, see `GENE-LISTS.md` for more info.
+  
+ 3. A clinical feature of your choice, from the Human Phenotype Ontology [6]
+ 
+  * Access using `read_hpo_genes("genes_for_HP_....tsv")` 
+  * These are human gene symbols, referring to genes of rare diseases that show the feature. Read the section below before trying.
+
+## Getting a gene list for another phenotype: the Human Phenotype Ontology
+
+**What is the HPO?**
+
+When doctors describe a patient they list the clinical
+features they see: seizures, a small head, delayed speech, stiffness. Different
+clinics used different words for the same feature, so the Human Phenotype
+Ontology (HPO) gives each feature one agreed name and an ID. *Autism* is
+`HP:0000717`; *Seizure* is `HP:0001250`. A feature in this sense is called a
+**phenotype**.
+
+The terms are arranged from general to specific, like a family tree. *Autism*
+is a more specific kind of *Autistic behavior*, which in turn sits under
+*Behavioral abnormality*. Each term page on the website shows where it sits
+in this arrangement.
+
+**Where do the genes come from?**
+
+The HPO does not run gene studies. Curators read the descriptions of
+**rare diseases**, mostly caused by a single gene (from the OMIM and Orphanet 
+databases), and record which features patients with each disease have. Those 
+databases also record which gene causes each disease. Joining the two gives a 
+gene list for every feature:
+
+> **gene** --(mutations cause)--> **rare disease** --(patients show)--> **feature**
+
+The website calls these gene associations **"Inferred"** because they come from
+this process rather than from a direct study of the gene and the feature. A term's 
+gene list also includes the genes of all its more specific terms: every gene on the
+*Autism* list (301 genes) is also on the *Autistic behavior* list (687 genes).
+
+**What does it mean for a gene to be in a term's list?**
+
+It means that mutations in the gene causes at least one rare disease in which
+this feature has been reported. It does **not** mean:
+
+* that the feature is common in that disease: it may be seen in only a few
+  patients;
+* that the gene works in the brain. For example, *ALAD*, an enzyme in haem
+  production, is on the *Autism* list through a form of porphyria (a metabolic
+  disease);
+* that the gene affects the common form of the condition. GWAS genes and genes
+  from autism sequencing studies are different kinds of evidence. Only 11 of
+  the 65 Sanders autism genes are on the HPO *Autism* list.
+
+Lists for related features overlap heavily, because many rare
+neurodevelopmental diseases cause seizures, intellectual disability and autism
+together: 22 of the 63 genes on the *Schizophrenia* list are also on the
+*Autism* list. General terms give very large lists (*Seizure*: 2,112 genes), and
+a result for such a list may say more about "genes for rare brain diseases"
+than about the feature itself. Try to use the most specific term that answers your
+question.
+
+**How to download a gene list from the website:**
+
+1. Go to <https://hpo.jax.org> and type the feature into the search box, for
+   example `parkinsonism`. Choose the result whose ID starts with `HP:`.
+2. Read the definition and look at where the term sits in the hierarchy at the
+   top of the page. Is this the level you want, or is a more specific term
+   better?
+3. Click the **Gene Associations [Inferred]** tab to look at the genes and how
+   many there are.
+4. Click **Export Associations** and choose **Genes**. Your browser saves a
+   file called something like `genes_for_HP_0001300`, with no file extension.
+   (Choosing *Diseases* gives a list of diseases instead; you want *Genes*.)
+5. Rename it to end in `.tsv` (it is a tab-separated text file), for example
+   `genes_for_HP_0001300.tsv`, and move it into the `day2` folder, next to this
+   worksheet.
+6. Write down the term name, its ID, the date and the number of genes. The HPO
+   is updated several times a year, so a list downloaded later may differ.
+
+**Alternative: download the data using R.** This uses the same address as the
+website's button. If it stops working, use the website steps above.
+
+```{r hpo_download, eval = FALSE, include=TRUE}
+term <- "HP:0001300"   # Parkinsonism: change to your term's ID
+url <- paste0("https://ontology.jax.org/api/network/annotation/", term,
+              "/download/gene")
+download.file(url, destfile = "genes_for_HP_0001300.tsv", mode = "wb")
+```
+
+Copies of six gene lists are in`gene-lists/hpo/`:
+
+| Feature | HPO ID | Genes | File |
+|---|---|---|---|
+| Autism | HP:0000717 | 301 | `genes_for_HP_0000717.tsv` |
+| Schizophrenia | HP:0100753 | 63 | `genes_for_HP_0100753.tsv` |
+| CNS hypomyelination | HP:0003429 | 113 | `genes_for_HP_0003429.tsv` |
+| Parkinsonism | HP:0001300 | 158 | `genes_for_HP_0001300.tsv` |
+| Dementia | HP:0000726 | 233 | `genes_for_HP_0000726.tsv` |
+| Seizure | HP:0001250 | 2,112 | `genes_for_HP_0001250.tsv` |
+
+**Import it into R.** The file has two columns: `id` (an NCBI gene number) and
+`name` (the human gene symbol). This function reads it, tidies the spaces
+around each entry and returns the symbols. It stops with a message if you
+downloaded the *Diseases* export by mistake.
+
+```{r read-hpo-genes, include=TRUE}
+# Read a 'Genes' export from the Human Phenotype Ontology website
+# (hpo.jax.org: term page -> Export Associations -> Genes). The file is
+# tab-separated with two columns, 'id' (NCBIGene:...) and 'name' (the human
+# gene symbol), with spaces around each tab. Returns unique gene symbols.
+read_hpo_genes <- function(path) {
+  tab <- utils::read.delim(path, colClasses = "character",
+                           strip.white = TRUE, check.names = FALSE)
+  names(tab) <- trimws(names(tab))
+  if (!all(c("id", "name") %in% names(tab))) {
+    stop("Expected columns 'id' and 'name'. Is this an HPO 'Genes' export? ",
+         "(The 'Diseases' export has the same columns but disease names.)")
+  }
+  if (!all(startsWith(tab$id, "NCBIGene:"))) {
+    stop("Some ids do not start with 'NCBIGene:'. This looks like the ",
+         "'Diseases' export; download 'Genes' instead.")
+  }
+  genes <- trimws(tab$name)
+  unique(genes[genes != ""])
+}
+```
+
+```{r hpo_import, include=TRUE}
+#use our HPO import function to load the gene list.
+hpo_list <- read_hpo_genes("gene-lists/hpo/genes_for_HP_0001300.tsv")
+length(hpo_list)
+head(hpo_list)
+```
+
+The result is a character vector of human gene symbols, which is the same kind
+of object as `hits_original`, so it can go straight into
+`EWCE::bootstrap_enrichment_test()` with `genelistSpecies = "human"`.
+
+**You can also use any gene list of your choice:** Lists from papers or other
+databases come in other shapes. Get them into a character vector of human gene
+symbols in a similar way:
+
+* a CSV file with a column called `Gene`: `read.csv("file.csv")$Gene`
+  (from Excel, use *Save As → CSV* first);
+* a text file with one gene per line: `readLines("file.txt")`.
+
+If the IDs are not human gene symbols (for example Ensembl IDs, or mouse
+genes), ask a TA: they either need converting or you need to define a different `genelistSpecies`.
+
+### Q11. A gene is on the HPO *Seizure* list. Which statement is supported?
+
+  1. Most people who have seizures carry a mutation in this gene.
+  2. Mutations in this gene cause at least one disease in which seizures have been reported.
+  3. This gene is mainly expressed in neurons.
+
+### Q12.
+
+Earlier you saw that random lists should come from genes that *could* have entered the target list. Which genes could have entered an HPO list? Is that the same as the default background EWCE uses?
+
+**Keep the following parameters the same** when running your analysis so that
+results are comparable:
+
+ * cell type level 1
+ * `reps = 1000`
+ * `set.seed(1234)`
+ * default background gene list
+
+```{r investigation_template, eval = FALSE, include=TRUE}
+set.seed(1234)
+my_list <- ewceData::example_genelist()   # or the autism list, or hpo_list
+res <- EWCE::bootstrap_enrichment_test(sct_data = ctd, sctSpecies = "mouse",
+                                       genelistSpecies = "human",
+                                       hits = my_list, reps = 1000,
+                                       annotLevel = 1, verbose = FALSE)
+knitr::kable(res$results, digits = 3)
+setdiff(my_list, unique(res$gene_data$gene))   # genes not used
+```
+
+If your laptop cannot run this, ask a TA for the prepared results
+(`prepared-outputs/`).
+
+**Investigation sheet (one per group):**
+
+1. **Question and prediction.** Which cell type(s) do you expect, and why?
+   Write this *before* running.
+2. **How genes entered the gene list.** What kind of evidence selected them
+   (common-variant GWAS? rare variants? expression changes?)
+3. **Usable and lost genes.** How many went in, how many were used, which were
+   lost? Could losing them matter?
+4. **Reference limitations.** Which relevant cell types or states are missing
+   from this mouse reference?
+5. **Corrected results.** Which cell types have `q < 0.05`? Report `p`, `q`
+   and `sd_from_mean`.
+6. **Change one choice.** Choose one, write down the reason *before*
+   running, and report what changed:
+   * level 2 instead of level 1 (does a subtype explain the signal?), or
+   * leaving out one gene that might dominate the result (for example a very
+     strong locus), stated in advance.
+   Do not keep changing the list until you get the result you expected.
+7. **Summarise findings and suggest next experiment.** Write a supported claim in at most three sentences, and one experiment or analysis that would test it further.
+
+
+# Part G (Core): claim review
+
+Swap your figure and three-sentence claim with another group. For the claim you
+receive, identify:
+
+1. the **observation** (what the data show),
+2. the **inference** (what the group concludes), and
+3. one **unresolved explanation** the group has not ruled out.
+
+A careful claim with a good follow-up is a good result, even if no cell type is
+significant.
+
+
+# Optional extension: from a GWAS to cell types
+
+Groups that finish can ask a TA for the MAGMA extension sheet. It asks what
+changes when we use evidence across the whole GWAS rather than a selected list,
+and uses prepared results; no extra installation is needed.
+
+
+# Before you leave: exit questions
+
+1. What made your background fair?
+2. What does your p-value describe, under that comparison?
+3. What further evidence would you need before making a causal claim?
+4. (If you did the extension) Name one real difference between the gene-list
+   analysis and the GWAS-wide analysis.
+
+
+# References
+
+[1] Skene NG, Grant SGN. Identification of vulnerable cell types in major brain disorders using single cell transcriptomes and expression weighted cell type enrichment. Front Neurosci 2016;10:16.
+
+[2] Lambert JC, Ibrahim-Verbaas CA, Harold D, et al. Meta-analysis of 74,046 individuals identifies 11 new susceptibility loci for Alzheimer's disease. Nat Genet 2013;45:1452–1458.
+
+[3] Zeisel A, Muñoz-Manchado AB, Codeluppi S, et al. Cell types in the mouse cortex and hippocampus revealed by single-cell RNA-seq. Science 2015;347:1138–1142.
+
+[4] Phipson B, Smyth GK. Permutation P-values should never be zero: calculating exact P-values when permutations are randomly drawn. Stat Appl Genet Mol Biol 2010;9:Article 39.
+
+[5] Sanders SJ, He X, Willsey AJ, et al. Insights into autism spectrum disorder genomic architecture and biology from 71 risk loci. Neuron 2015;87:1215–1233.
+
+[6] Gargano MA, Matentzoglu N, Coleman B, et al. The Human Phenotype Ontology in 2024: phenotypes around the world. Nucleic Acids Res 2024;52:D1333–D1346. <https://hpo.jax.org>
