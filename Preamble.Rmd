@@ -1,0 +1,190 @@
+---
+title: "R for Biology - Introduction"
+output: pdf_document
+header-includes:
+  # Older TeX Live (pre-2023) graphicx rejects the alt= key that pandoc 3 emits.
+  - \makeatletter\define@key{Gin}{alt}{}\makeatother
+---
+
+```{R setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, error = FALSE, warning = FALSE)
+```
+
+# Introduction
+
+This section of the module will introduce you to the foundations of biological data analysis using programming language R. You will learn how to work with single-cell RNA sequencing data to identify distinct cell types within complex tissues, and how to determine which cell types are associated with specific diseases through enrichment analysis.
+
+Through practical, hands-on sessions, you will gain experience with key computational tools and workflows used in modern biology. These skills will help you develop an intuition for analysing large-scale biological datasets and extracting meaningful insights from gene expression patterns across different cell types.
+
+
+## Tutorial Overview
+
+**Day 1:** scRNA-Seq Analysis Basics - From Raw Data To Cell Types  
+**Day 2:** EWCE R Package - Cell Type Enrichment Analysis
+
+
+# R Kickstart (Required)
+
+We’ll be working with R, a programming language designed for data analysis and
+statistics. It is recommended that you familiarise yourself with the basics of R
+programming before the session. There are many free resources online to get you
+started.
+
+Here are some recommendations (click on the titles to launch). Please go through
+at least one of them if you are unfamiliar with R.
+
+- [**Youtube: R Programming for ABSOLUTE beginners**](https://www.youtube.com/watch?v=FY8BISK5DpM)  
+  [*14 minutes!*]  
+  A short intro to R programming covering the basic, creating and using
+  variables.
+
+- [**Youtube: R Programming Tutorial**](https://www.youtube.com/watch?v=_V8eKsto3Ug)  
+  [*1-2 hours*]  
+  A very gentle introduction to R, which also includes instructions for
+  installing R and RStudio.
+  
+  You may skip the last few sections on clustering and principal components
+  for now.
+
+- [**Swirl**](https://swirlstats.com/)  
+  [*A few hours*]  
+  An interactive R programming course that runs within RStudio itself. You can
+  learn the basics of R programming while writing R code.
+
+- [**R for Data Science**](https://r4ds.had.co.nz/)  
+  [*A few hours*]  
+  A free online book that
+  covers the basics of R programming and data analysis using the tidyverse
+  packages.
+  
+  Bite-sized chapters with very simple language. Highly recommended for
+  beginners.
+
+Feel free to ask any doubts you may have during the session!
+
+# Software Requirements
+
+Please make sure you have the following installed on your system before the
+session.
+
+### 1. R (version 4.5)
+
+The workshop materials were tested with **R 4.5.1**.
+R 4.6 has not yet been tested by the workshop team; if you already have R 4.6,
+run the check below and tell us the result.
+
+##### Download Links
+```
+Windows: https://cloud.r-project.org/bin/windows/base/
+MacOS: https://cloud.r-project.org > MacOS
+```
+
+### 2. RStudio Desktop
+RStudio Desktop is the program we will be using for writing and executing R
+code. Such tools are known as Integrated Development Environments (IDEs).
+Another popular example of an IDE is [VSCode](https://code.visualstudio.com/).
+
+```
+Download: https://posit.co/download/rstudio-desktop/
+```
+
+### 3. R packages
+Within the RStudio console, run the installation code below. It is the same
+code as `install-packages.R` in the setup folder that came with this document,
+so you can instead open that file in RStudio (*File > Open File*) and click
+**Source** at the top right of the editor.
+
+![R Studio Console](assets/preamble/rstudio-console.jpg){width=80%}
+
+The console is where we will be executing all the R code. Sometimes, you may
+have two panes on the left side of RStudio. In such cases, the console is
+usually the bottom-left pane.
+
+(Copying and pasting ONE BLOCK AT A TIME is fine.)
+
+**Errors and warnings are different.** An *error* stops a command; a *warning*
+is a message that may or may not matter. Do not assume an installation worked:
+the check in step 4 tells you. If an installation reports an error, or asks a
+question you are unsure how to answer, copy the message (or take a screenshot)
+and email it to any of the tutors before going further.
+
+**What to expect.** The first block downloads R packages from CRAN and
+Bioconductor: several hundred MB, mostly Seurat and the packages it needs.
+On a slow connection or an older laptop this can take a long time. Leave it
+running, and do not close RStudio while it works. Lots of red text scrolling
+past is normal: R prints its progress messages in red.
+
+```{R, eval = FALSE}
+# Install up to 8 packages at once, and allow slow downloads up to 20 minutes
+options(Ncpus = 8, timeout = max(1200, getOption("timeout")))
+
+# Bioconductor's installer (Bioconductor hosts many bioinformatics packages)
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+  install.packages("BiocManager")
+}
+
+# Workshop packages. update = FALSE leaves packages you already have alone.
+BiocManager::install(
+  c("Seurat", "EWCE", "ewceData", "knitr", "rmarkdown", "ggdendro"),
+  update = FALSE, ask = FALSE
+)
+```
+
+If R asks *"Update all/some/none? [a/s/n]"*, type `n` and press Enter.
+
+Next, load the two main packages. This shows whether the installation really
+worked.
+
+```{R, eval = FALSE}
+library(Seurat)
+library(EWCE)
+```
+
+If either line says *there is no package called 'X'*, a package that Seurat
+or EWCE needs did not install (in 2026 this was often `KEGGREST`). Install
+that package on its own, replacing `X` with the name in the message, then run
+the two `library()` lines again:
+
+```{R, eval = FALSE}
+BiocManager::install("X", update = FALSE, ask = FALSE)
+```
+
+Finally, download the Day 2 example data (about 100 MB) so there is no wait
+during the session.
+
+```{R, eval = FALSE}
+# The data are kept in a folder on your computer (a "cache"). This line lets
+# R create that folder without asking first.
+ExperimentHub::setExperimentHubOption("ASK", FALSE)
+
+invisible(ewceData::ctd())
+invisible(ewceData::example_genelist())
+```
+
+If R asks *"... does not exist, create directory? (yes/no)"*, type `yes` and
+press Enter.
+
+You do not need to download the Day 1 data now: the Day 1 worksheet
+downloads it (7.6 MB) when you reach that step.
+
+### 4. Check that everything works
+
+Open `check-setup.R` from the same setup folder in RStudio (*File > Open
+File*) and click **Source** at the top right of the editor. The results appear
+in the console. Every line should say `PASS`.
+
+If a line says `FAIL`, email that line and the message below it to any of the
+tutors. If the problem cannot be fixed before the session, you can
+still take part by working with a partner and using the prepared outputs.
+
+
+# Contact
+
+**Before the workshop:** email any of the tutors. Include the error message (or
+a screenshot) and the output of `check-setup.R`.
+
+**During the workshop:** ask any tutor in the session.
+
+
+---
+*© Imperial College London – MSc in Translational Neuroscience, Department of Brain Sciences (2026)*

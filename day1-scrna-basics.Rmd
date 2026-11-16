@@ -1,0 +1,995 @@
+---
+title: "Day 1 - scRNA-seq Basics: from measurements to provisional cell identities"
+output:
+   pdf_document:
+     latex_engine: xelatex
+header-includes:
+  # Older TeX Live (pre-2023) graphicx rejects the alt= key that pandoc 3 emits.
+  - \makeatletter\define@key{Gin}{alt}{}\makeatother
+---
+
+```{R setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, error = FALSE, warning = FALSE)
+```
+
+
+# Objective
+
+Today you will:
+
+- see what a single-cell count matrix contains, and what its numbers (and its
+  zeros) mean;
+- take real blood cells from raw counts to clusters, using Seurat;
+- use marker genes to propose a cell type for each cluster, and judge how sure
+  you can be;
+- turn your labelled cells into a small reference table, the starting point
+  for Day 2.
+
+One idea runs through the day: a cluster, a UMAP plot or a marker list is an
+**observation**. Calling a cluster a cell type is an **interpretation**: it
+needs evidence, and it can be wrong.
+
+Sections marked **Core** are for everyone. **Optional** sections are extras for
+faster groups or for after the workshop; nothing later depends on them.
+
+**Today's plan.** The worksheets take about 3 hours; with the lecture and a
+break, Day 1 fits in about 4 hours.
+
+| Part | What you do | Time |
+|---|---|---|
+| Getting started | Set up RStudio, load the packages | 10 min |
+| A | A tiny made-up count matrix | 20 min |
+| B | The PBMC analysis: from counts to labelled clusters | 85 min |
+| C | Group challenge: is this extra cluster a cell type? | 35 min |
+| D | A continuum as a counterexample | 5 min |
+| E (bridge worksheet) | Build a reference for Day 2 | 25 min |
+| Exit questions | | 5 min |
+| F (bridge worksheet, Optional) | What changes in disease? | after the workshop |
+
+# Background
+
+Single-cell RNA sequencing (scRNA-seq) is a powerful technique that measures gene expression in individual cells, rather than averaging across millions of cells as in traditional RNA-seq. This allows researchers to identify distinct cell types, discover rare cell populations, and understand cellular heterogeneity within tissues [1].
+
+![**Analogy of Bulk vs Single-Cell RNA Seq** - Each berry on the left is a single cell. We can either mix them all into one (bulk RNA Seq, easier, cheaper) or pick them apart and analyse each individually (single cell RNA Seq, harder, more expensive) [2]. Mixing berries loses individual traits, giving only the average flavour. Analysing each preserves unique flavours of every berry.](../assets/day1/bulk-vs-scrna-seq.png){width=70%}
+
+**Why use single-cell RNA-seq?**
+In complex tissues like blood, different cell types perform different functions and express different sets of genes. Traditional bulk RNA-seq measures the average expression across all cells, which can hide this diversity. scRNA-seq profiles each cell separately, revealing the molecular signatures that distinguish cell types and states.
+
+**How does it work?**
+In scRNA-seq, individual cells are isolated and their RNA is captured, converted to DNA (cDNA), and sequenced. Each cell receives a unique molecular barcode, allowing researchers to track which RNA molecules came from which cell. The result is a gene-by-cell count matrix showing how many molecules of each gene were detected in each cell. Only a fraction of each cell's RNA molecules is captured, so the counts are a *sample* of what the cell contained.
+
+**What is Seurat?**
+Seurat [3,4,5,6,7] is one of the most widely used R [8] packages for analysing scRNA-seq data. It stores raw counts, normalised data, metadata and analysis results in a single object.
+
+**Dimensionality reduction**
+With thousands of genes measured per cell, each cell is a point in a space with thousands of dimensions. Dimensionality reduction methods such as PCA (Principal Component Analysis) summarise this as a smaller number of new dimensions. A reduced representation keeps some information and loses some; which differences it keeps depends on the method and the choices we make [9].
+
+**Clustering**
+Clustering groups cells that are similar *in the representation we chose* (here, the first principal components). Seurat builds a nearest-neighbour graph, connecting each cell to the cells most similar to it in that representation, and then finds densely connected groups [10]. A cluster is a group of similar cells; it is not automatically a known cell type.
+
+Today's tasks are a simplified version of one of [Seurat's tutorials](https://satijalab.org/seurat/articles/pbmc3k_tutorial), with
+greater emphasis on understanding the data structure and the reasoning.
+
+
+# Getting started (Core)
+
+### 1. RStudio - Setting up your project
+
+- Launch RStudio
+- Go to `File` > `New Project...` > `New Directory` > `New Project` >
+Give it a name (e.g., `day1-scRNA-basics`) > Choose a directory to save the
+project > `Create Project`
+
+![**RStudio Layout**](../assets/day1/rstudio.jpg){width=90%}
+
+The R Console is where R runs code. Text output appears in the console, while
+plots show in the `Plots` tab (bottom-right). Files you save (we save our
+progress twice today) go into the project folder.
+
+You can type the code from this worksheet straight into the Console. We
+suggest typing it into an R script instead (`File` > `New File` > `R Script`):
+then you can save your code and re-run a line after a mistake. To run a line
+from a script, put your cursor on it and press `Ctrl + Enter` (`Cmd + Enter`
+on a Mac).
+
+Three things you will see in every code box:
+
+- Lines starting with `#` are **comments**: notes explaining the code. R
+  ignores them, so you do not need to type them.
+- `x <- something` **stores** a result under the name `x`, so we can use it
+  later.
+- A line with **just a name** on it (for example `totals`) prints that object.
+  We use these lines to look at what the line above made.
+
+### 2. Loading the required packages
+
+R packages are sets of ready-made tools that help you do tasks like analysing
+data or making plots. Loading a package makes its tools available in this
+session.
+
+```{R}
+# Seurat: the tools for single-cell analysis
+library(Seurat)
+```
+
+*If you get an error about a missing package, ask a tutor. You can continue
+with a partner while it is fixed.*
+
+
+# Part A (Core): a tiny experiment before the full dataset
+
+Before we use thousands of cells, here is a **synthetic** count matrix that we
+made up for teaching: 4 genes and 6 cells. The numbers are not measurements.
+
+```{R tiny-matrix}
+# SYNTHETIC teaching data. matrix() fills in its values column by column, so
+# each line below becomes one column: one cell's counts for genes A, B, C, D.
+tiny <- matrix(
+  c( 6,  3,  1, 0,    # cell_1
+    18,  9,  3, 0,    # cell_2: exactly 3 x cell_1
+     5,  4,  0, 1,    # cell_3
+     0,  1,  6, 3,    # cell_4
+     1,  0, 10, 9,    # cell_5
+     0,  3, 18, 9),   # cell_6: exactly 3 x cell_4
+  nrow = 4,
+  # Row names, then column names. 1:6 means 1, 2, 3, 4, 5, 6, and paste0()
+  # glues text onto each number: "cell_1", "cell_2", ...
+  dimnames = list(c("gene_A", "gene_B", "gene_C", "gene_D"),
+                  paste0("cell_", 1:6))
+)
+
+tiny
+```
+
+**Work in pairs, by hand first (5 minutes):**
+
+1. What does a row represent? What does a column represent?
+2. Calculate the total count for each cell. Which cells have the largest totals?
+3. Which cells would you group together? Why?
+4. `cell_3` has 0 counts for `gene_C`. Does that prove `cell_3` contains no
+   `gene_C` RNA? What else could explain the zero?
+
+Now check your arithmetic with R. To pick out part of a matrix, use square
+brackets: `tiny[row, column]`. Leaving one side blank means "all", so
+`tiny[, "cell_1"]` is every gene in `cell_1`.
+
+```{R tiny-totals}
+# Total molecules detected in each cell: add up each column
+totals <- colSums(tiny)
+totals
+
+# One cell by hand: each of cell_1's counts divided by cell_1's total.
+# This is the proportion of the cell's molecules that came from each gene.
+tiny[, "cell_1"] / totals["cell_1"]
+
+# The same for every cell at once. sweep() divides each column (the 2 means
+# "columns") by that column's total.
+proportions <- sweep(tiny, 2, totals, "/")
+
+# round(x, 2) shows 2 decimal places, which is easier to read
+round(proportions, 2)
+```
+
+Now compare the cells, first using raw counts and then using proportions.
+
+```{R tiny-distances}
+# dist() measures how different the ROWS of a table are, but our cells are
+# columns. t() (transpose) swaps rows and columns, so cells become rows.
+cells_as_rows <- t(tiny)
+cells_as_rows
+
+# Distance between every pair of cells, using raw counts (0 = identical;
+# bigger = more different)
+raw_distances <- dist(cells_as_rows)
+round(raw_distances, 1)
+
+# The same, using proportions
+prop_distances <- dist(t(proportions))
+round(prop_distances, 2)
+```
+
+In each table, find the distance from `cell_1` to `cell_2` and from `cell_1` to
+`cell_4`.
+
+```{R tiny-plots, fig.height=3.5, fig.cap="Synthetic example: cells with different totals can have the same pattern."}
+# Plotting code: no need to follow every line.
+# Left: each cell's total. Right: each cell's proportions of gene_A and gene_C.
+par(mfrow = c(1, 2))   # two plots side by side
+barplot(totals, las = 2, ylab = "Molecules detected",
+        main = "Totals differ ...")
+plot(proportions["gene_A", ], proportions["gene_C", ],
+     xlab = "Proportion gene_A", ylab = "Proportion gene_C",
+     main = "... patterns do not", pch = 19, xlim = c(0, 0.7),
+     ylim = c(0, 0.7))
+text(proportions["gene_A", ], proportions["gene_C", ],
+     labels = colnames(tiny), pos = 4, cex = 0.8)
+par(mfrow = c(1, 1))   # back to one plot at a time
+```
+
+**Discuss:** using raw counts, `cell_1` is closer to `cell_4` than to `cell_2`.
+Using proportions, `cell_1` and `cell_2` are identical. Why can a larger count
+not, on its own, tell us that a cell has a different identity?
+
+Seurat's default normalisation ("LogNormalize") builds on exactly this idea:
+
+```{R tiny-lognorm}
+# LogNormalize in three steps:
+#   1. divide by the cell's total (that is our 'proportions'),
+#   2. multiply by 10,000,
+#   3. take log(1 + x), which log1p() does. The log shrinks very large values.
+lognorm <- log1p(proportions * 10000)
+round(lognorm, 2)
+```
+
+Check: are `cell_1` and `cell_2` still identical after normalisation?
+
+
+# Part B (Core): the PBMC analysis
+
+Now the same ideas on real data, one step at a time.
+
+### 3. Loading the data
+
+Seurat can read data in several formats, such as 10x Genomics (Cell Ranger)
+output, CSV/TSV files and HDF5 files. Today we use peripheral blood mononuclear
+cells (PBMCs) from a healthy donor, profiled by 10x Genomics [11]. We read the
+files exactly as the Cell Ranger software writes them.
+
+First download the data (7.6 MB, a few seconds). The chunk only downloads if
+the files are not already there, so it is safe to run again.
+
+```{R}
+# Where the data lives on 10x Genomics' website
+url <- "https://cf.10xgenomics.com/samples/cell/pbmc3k/pbmc3k_filtered_gene_bc_matrices.tar.gz"
+
+# The folder the files unpack into
+data_dir <- "filtered_gene_bc_matrices/hg19"
+
+if (!dir.exists(data_dir)) {
+  # mode = "wb" keeps the file intact on Windows
+  download.file(url, destfile = "pbmc3k.tar.gz", mode = "wb")
+  # .tar.gz is a compressed folder; untar() unpacks it
+  untar("pbmc3k.tar.gz")
+}
+
+# Cell Ranger writes three files: the counts (matrix.mtx), the gene names
+# (genes.tsv) and the cell barcodes (barcodes.tsv)
+list.files(data_dir)
+```
+
+*If the download fails, ask a tutor for a copy of `pbmc3k.tar.gz`, put it in
+your working folder (the one `getwd()` prints) and run the chunk again.*
+
+Now read the files into R and make a Seurat object.
+
+```{R}
+# Read10X() reads the three files into one count matrix: genes x cells
+pbmc_counts <- Read10X(data.dir = data_dir)
+
+# Make the Seurat object. Two simple filters, the same as Seurat's own
+# tutorial: keep genes detected in at least 3 cells, and cells with at least
+# 200 genes detected.
+pbmc3k <- CreateSeuratObject(counts = pbmc_counts, project = "pbmc3k",
+                             min.cells = 3, min.features = 200)
+
+# Typing the object's name prints a short summary of what it contains
+pbmc3k
+```
+
+In Seurat terminology for scRNA-seq data:
+
+Features = genes (or transcripts) measured
+Samples = individual cells sequenced
+Assay = the type of measurement (in this case, RNA expression)
+
+#### Q1. Based on the output above, which of the following is correct?
+
+- 13,714 cells were analysed, each expressing 2,700 genes
+- 2,700 cells were analysed, with 13,714 genes measured across all cells
+- 13,714 genes were analysed across 2,700 different experimental conditions
+- 2,700 genes were detected in 13,714 individual cells
+
+
+### 4. Look at the count matrix
+
+This is the real version of `tiny` from Part A: rows are genes, columns are
+cells, and each entry is the number of molecules of that gene detected in that
+cell. Seurat stores it as the `counts` *layer* of the RNA assay.
+
+```{R}
+# Take the raw count matrix out of the Seurat object
+counts <- LayerData(pbmc3k, assay = "RNA", layer = "counts")
+
+# It is far too big to print, so look at one corner:
+# rows 1 to 5 (genes) and columns 1 to 5 (cells)
+counts[1:5, 1:5]
+```
+
+The cells (columns) are named with unique barcodes, while the genes (rows) are
+named using their gene symbols.
+
+The dots are zeros: **no molecules of that gene were detected in that cell**.
+This does not prove the gene is switched off. Only a fraction of each cell's
+RNA is captured, so a gene expressed at a low level can be missed by chance
+(just like `cell_3` and `gene_C` in Part A). A zero can also be a true absence.
+Matrices with mostly zeros are called "sparse". How sparse is this one?
+
+```{R}
+# Number of entries that are NOT zero. nnzero() comes from the Matrix
+# package; Matrix:: tells R which package to find it in.
+n_nonzero <- Matrix::nnzero(counts)
+
+# Number of entries in total (genes x cells)
+n_entries <- length(counts)
+
+# Fraction of the matrix that is zero
+1 - n_nonzero / n_entries
+```
+
+#### Q2. Which statement best describes a zero in this count matrix?
+
+- The gene is not expressed in that cell
+- No molecules of that gene were detected in that cell; the gene may be absent or may have been missed by sampling
+- The gene was not measured in that cell
+- The cell failed quality control
+
+
+### 5. Seurat Metadata
+
+Alongside the counts, Seurat keeps a table of information about each cell: the
+**metadata**. `@meta.data` reaches inside the object for that table.
+
+```{R}
+# head(x, 5) shows just the first 5 rows: here, the first 5 cells
+head(pbmc3k@meta.data, 5)
+```
+
+Here, `nCount_RNA` is the total number of molecules detected per cell (the
+`totals` of Part A), and `nFeature_RNA` is the number of different genes
+detected per cell.
+
+The `seurat_annotations` column we deleted would have been here. Working out
+those labels from the data is today's main task.
+
+You can add your own metadata column with
+`pbmc3k$<your_column_name> <- <your_values>`; we do this in section 8.
+
+
+### 6. Summarise Tables
+
+A handy function in R is `summary()`. You can pass in table-like data (a data
+frame or matrix) and it returns summary statistics for each column.
+
+Try passing the metadata table to `summary()` to answer the following
+question.
+
+```{R, include = FALSE}
+summary(pbmc3k@meta.data)
+```
+
+#### Q3. What is the mean number of molecules (`nCount_RNA`) per cell in this dataset?
+
+- ~2,200
+- ~850
+- ~1,800
+- ~2,400
+
+### 7. Visualise Metadata
+
+Viewing a table with thousands of rows is not fun. Let's plot it instead.
+
+```{R}
+# One violin per metadata column
+VlnPlot(pbmc3k, features = c("nFeature_RNA", "nCount_RNA"))
+```
+
+Each dot is one cell. The violin is widest where most cells' values lie.
+
+### 8. Quality Control (QC)
+
+We want to remove cells whose measurements are unreliable, for example damaged
+cells. One common signal is a high percentage of counts from mitochondrial
+genes: when a cell's membrane is damaged, cytoplasmic RNA can leak out while
+mitochondrial RNA remains.
+
+Human mitochondrial gene names start with "MT-". The pattern `"^MT-"` means
+"starts with MT-" (`^` marks the start of the name).
+
+```{R}
+# For each cell, the percentage of its counts that come from mitochondrial
+# genes. Store it as a new metadata column called percent.mt.
+pbmc3k$percent.mt <- PercentageFeatureSet(pbmc3k, pattern = "^MT-")
+
+# The new column, for the first few cells
+head(pbmc3k$percent.mt)
+
+# Its distribution across all cells
+VlnPlot(pbmc3k, features = "percent.mt")
+```
+
+**This example uses a 5% threshold.** That is an *analysis choice* for this
+dataset (it follows the Seurat tutorial), not a universal rule. Suitable
+thresholds differ between tissues, cell types and technologies.
+
+```{R}
+# Before filtering: how many cells are at or above 5%?
+# (Each comparison gives TRUE or FALSE; sum() counts the TRUEs.)
+sum(pbmc3k$percent.mt >= 5)
+
+# Keep only the cells with less than 5% mitochondrial counts
+pbmc3k <- subset(pbmc3k, subset = percent.mt < 5)
+
+# How many cells remain? |> is the "pipe": it passes the left side into the
+# function on the right. This is the same as length(Cells(pbmc3k)).
+Cells(pbmc3k) |> length()
+```
+
+**Discuss:** what evidence would make you more or less confident in a
+threshold? (Think about the shape of the violin plot, which cells are removed,
+and whether some healthy cell types naturally have more mitochondrial RNA.)
+
+*Further Reading: [Classification of low quality cells from single-cell RNA-seq data](https://pmc.ncbi.nlm.nih.gov/articles/PMC4758103/)*
+
+### 9. Normalisation
+
+Cells differ in how many molecules were detected in total, partly for
+technical reasons (Part A). Normalisation corrects for this, using the same
+three steps you ran on `tiny`: divide by the cell's total, multiply by 10,000,
+take `log(1 + x)`.
+
+```{R}
+pbmc3k <- NormalizeData(pbmc3k)
+
+# One gene in the first 5 cells, before and after.
+# LYZ is very highly expressed in some blood cells.
+LayerData(pbmc3k, layer = "counts")["LYZ", 1:5]
+LayerData(pbmc3k, layer = "data")["LYZ", 1:5]
+```
+
+The raw counts are kept in the `counts` layer; the normalised values are stored
+in a new `data` layer. The normalised values are no longer whole numbers, and
+large counts have been shrunk by the log.
+
+Compare the second and third cells. Why can a cell with fewer LYZ molecules
+end up with a higher normalised value? (Think back to Part A.)
+
+To read more on any function in R, run `?FunctionName` in the console
+(e.g., `?NormalizeData`).
+
+
+### 10. Feature selection and scaling
+
+Next we choose the genes that vary most across cells ("variable features") and
+use only those for the next steps.
+
+```{R}
+# Find the 2,000 genes whose expression varies most across cells
+pbmc3k <- FindVariableFeatures(pbmc3k, selection.method = "vst")
+
+# The ten most variable genes
+head(VariableFeatures(pbmc3k), 10)
+```
+
+**Scaling** is different from normalisation. Normalisation adjusts each
+*cell* for its total count. Scaling adjusts each *gene* across cells: it
+subtracts the gene's mean and divides by its standard deviation, so every gene
+has mean 0 and standard deviation 1 (a z-score). Without scaling, the PCA in
+the next step would be dominated by the genes with the largest values.
+
+Scaling puts genes on a comparable numerical scale. It does **not** make every
+gene equally informative biologically, and it can make small, noisy
+differences in lowly expressed genes look as large as real differences.
+
+```{R}
+pbmc3k <- ScaleData(pbmc3k)
+scaled <- LayerData(pbmc3k, layer = "scale.data")
+
+# Rows x columns: by default only the variable genes are scaled
+dim(scaled)
+
+# Check one gene: after scaling, its mean is 0 and its standard deviation 1
+round(mean(scaled["LYZ", ]), 2)
+round(sd(scaled["LYZ", ]), 2)
+```
+
+`ScaleData` can also "regress out" unwanted sources of variation, such as
+mitochondrial percentage. We do not use that option today; see `?ScaleData`.
+
+#### Q4. What does `ScaleData()` do before PCA?
+
+- Removes low-quality cells from the dataset
+- Centres and scales each gene across cells, so genes with large values do not dominate the PCA by magnitude alone
+- Makes every gene equally important biologically
+- Corrects each cell for its total number of detected molecules
+
+### 11. Dimensionality Reduction with PCA
+
+PCA finds new dimensions (principal components, PCs) that capture as much of
+the variation between cells as possible. Before running it on 2,000 genes,
+recall the **synthetic** example from the lecture: two groups of cells
+measured on just two features.
+
+```{R projection-data}
+# SYNTHETIC: 2 groups of 40 cells measured on 2 features. The groups differ
+# on feature 1; feature 2 varies a lot but in the same way in both groups
+# (think of a technical or unrelated biological source of variation).
+set.seed(11)   # makes the random numbers the same every time
+n <- 40
+proj <- data.frame(
+  group = rep(c("group 1", "group 2"), each = n),
+  # rnorm() draws random numbers around 'mean', with spread 'sd'
+  feature_1 = c(rnorm(n, mean = 2, sd = 0.5), rnorm(n, mean = 4, sd = 0.5)),
+  feature_2 = rnorm(2 * n, mean = 5, sd = 3)
+)
+
+# One row per cell
+head(proj)
+```
+
+```{R projection-plots, fig.height=3, fig.cap="Synthetic example: keeping one feature can preserve or hide a difference."}
+# Plotting code: no need to follow every line.
+# Left: both features. Middle and right: each feature on its own.
+cols <- c("group 1" = "#1b9e77", "group 2" = "#d95f02")[proj$group]
+par(mfrow = c(1, 3))
+plot(proj$feature_1, proj$feature_2, col = cols, pch = 19,
+     xlab = "feature 1", ylab = "feature 2", main = "Both features")
+stripchart(proj$feature_1 ~ proj$group, col = c("#1b9e77", "#d95f02"),
+           pch = 19, method = "jitter", xlab = "feature 1",
+           main = "Keep feature 1 only")
+stripchart(proj$feature_2 ~ proj$group, col = c("#1b9e77", "#d95f02"),
+           pch = 19, method = "jitter", xlab = "feature 2",
+           main = "Keep feature 2 only")
+par(mfrow = c(1, 1))
+```
+
+```{R projection-pca}
+# PCA on the two features
+pca <- prcomp(proj[, c("feature_1", "feature_2")])
+
+# How strongly each feature contributes to each PC (the "loadings").
+# A value near 1 or -1 means the PC mostly follows that feature.
+round(pca$rotation, 2)
+
+# Share of the total variation that each PC captures
+variance <- summary(pca)$importance["Proportion of Variance", ]
+round(variance, 2)
+```
+
+Here PC1 mostly follows feature 2, because feature 2 has the most variance,
+but the groups differ on feature 1. **The direction of greatest variance is
+not guaranteed to be the difference you care about.**
+
+Now the real data, where each cell has one dimension per variable gene.
+
+```{R}
+# PCA on the scaled values of the 2,000 variable genes
+pbmc3k <- RunPCA(pbmc3k, features = VariableFeatures(object = pbmc3k))
+
+# The summary now lists a "dimensional reduction" called pca
+pbmc3k
+```
+
+The PCA results are stored in `pbmc3k[["pca"]]`. To see which genes drive each
+PC:
+
+```{R, eval = FALSE}
+# The genes with the largest positive and negative weights on PCs 1 to 5
+VizDimLoadings(pbmc3k, dims = 1:5, reduction = "pca")
+```
+
+### 12. How many PCs to use?
+
+```{R}
+# One point per PC: how much variation it captures (as a standard deviation)
+ElbowPlot(pbmc3k)
+```
+
+The variance explained levels off around PC 10, so we use the first 10 PCs.
+This is another analysis choice. Using too few PCs can miss rare populations;
+using too many adds noise. Later you can test whether your conclusions change.
+
+
+### 13. Neighbours and clustering
+
+```{R, results = "hide"}
+# Build the nearest-neighbour graph: each cell is linked to the cells most
+# similar to it IN THE FIRST 10 PCs (not in the original tissue)
+pbmc3k <- FindNeighbors(pbmc3k, dims = 1:10)
+
+# Find groups of densely linked cells. 'resolution' sets how finely the cells
+# are split: higher values usually give more, smaller clusters.
+pbmc3k <- FindClusters(pbmc3k, resolution = 0.5)
+```
+
+Each cell's current group is called its *identity*; `Idents()` gets it.
+
+```{R}
+# Every cell now has a cluster number. The first five cells:
+head(Idents(pbmc3k), 5)
+
+# How many clusters did YOUR run produce?
+nlevels(Idents(pbmc3k))
+
+# Cells per cluster
+Idents(pbmc3k) |> table()
+```
+
+The number and numbering of clusters depend on the data, the choices above
+(PCs, resolution) and package versions. Your run may differ from your
+neighbour's.
+
+**Checkpoint (tell your partner):** a cluster is a set of cells grouped by
+similarity in the chosen representation. What other evidence would you need
+before calling it a cell type?
+
+```{R}
+# Save your progress to a file, so you can come back to this point (Part C)
+saveRDS(pbmc3k, "pbmc3k_clustered.rds")
+```
+
+
+### 14. Finding marker genes
+
+`FindAllMarkers` compares each cluster with all the other cells and reports
+genes that are higher in that cluster. We run it once for all clusters.
+
+```{R, results = "hide"}
+# only.pos = TRUE keeps genes that are HIGHER in the cluster.
+# This takes a minute or two.
+all.markers <- FindAllMarkers(pbmc3k, only.pos = TRUE)
+```
+
+```{R}
+# One row per gene per cluster
+head(all.markers)
+```
+
+The columns that matter most today:
+
+- `avg_log2FC`: how much higher the gene is in the cluster than in all other
+  cells, on a log2 scale (1 means about twice as high).
+- `pct.1` and `pct.2`: the fraction of cells in the cluster (`pct.1`) and in
+  all other cells (`pct.2`) in which the gene was detected. A useful marker
+  has a high `pct.1` and a low `pct.2`.
+- `p_val_adj`: the p-value, adjusted for testing thousands of genes.
+
+Look at the rows printed above: by that rule, are they useful markers?
+
+To see one cluster's evidence, keep only its rows:
+
+```{R}
+# all.markers$cluster == 0 is TRUE for cluster 0's rows and FALSE for the
+# rest; putting it before the comma keeps only the TRUE rows
+cluster0.markers <- all.markers[all.markers$cluster == 0, ]
+
+# Top 5 markers for cluster 0
+head(cluster0.markers, 5)
+```
+
+Change the cluster number, or the number in `head()`, to look at others.
+
+### Q5. Why might a well-known marker gene not appear among a cluster's top 10 genes?
+
+- It may have a moderate fold change but high specificity, and not be top-ranked by p-value
+- The top genes may also be expressed in other clusters
+- Technical or biological noise (such as stress) can rank other genes highly
+- All of the above
+
+
+### 15. Proposing cell type labels
+
+Use your markers and the table of known PBMC markers below (from the Seurat
+tutorial) to propose a label for each cluster.
+
+| Cell Type        | Marker Genes                  |
+|------------------|-------------------------------|
+| Naive CD4+ T     | IL7R, CCR7                    |
+| CD14+ Mono       | CD14, LYZ                     |
+| Memory CD4+      | IL7R, S100A4                  |
+| B                | MS4A1                         |
+| CD8+ T           | CD8A                          |
+| FCGR3A+ Mono     | FCGR3A, MS4A7                 |
+| NK               | GNLY, NKG7                    |
+| DC               | FCER1A, CST3                  |
+| Platelet         | PPBP                          |
+
+A plot is often quicker than tables:
+
+```{R, fig.height=4}
+# The marker genes from the table, stored once so we can reuse them in Part C
+pbmc_markers <- c("IL7R", "CCR7", "S100A4", "CD14", "LYZ", "MS4A1", "CD8A",
+                  "FCGR3A", "MS4A7", "GNLY", "NKG7", "FCER1A", "CST3", "PPBP")
+
+# One row per cluster, one column per gene (RotatedAxis() tilts the names)
+DotPlot(pbmc3k, features = pbmc_markers) + RotatedAxis()
+```
+
+How to read it: **dot size** is the percentage of the cluster's cells in which
+the gene was detected; **colour** is the average expression in those cells
+(bluer = higher). Look for a cluster's row with large, blue dots for one cell
+type's markers.
+
+If you cannot match a cluster confidently, label it "Unknown", or use a
+broader label (e.g. "T cell"). A well-supported broad label is better than a
+confident wrong one.
+
+```{R, eval = FALSE}
+# The cluster numbers, in order. Write one label per cluster, in THIS order.
+levels(pbmc3k)
+
+new.cluster.ids <- c(
+    "...",  # cluster 0
+    "..."   # add one line per cluster in YOUR run
+)
+
+# Stops with an error if you wrote the wrong number of labels
+stopifnot(length(new.cluster.ids) == nlevels(pbmc3k))
+
+# Attach each label to its cluster number, then rename the clusters
+names(new.cluster.ids) <- levels(pbmc3k)
+pbmc3k <- RenameIdents(pbmc3k, new.cluster.ids)
+
+# Cells per proposed cell type
+Idents(pbmc3k) |> table()
+
+# Save the labelled object for the bridge worksheet (Part E)
+saveRDS(pbmc3k, "pbmc3k_annotated.rds")
+```
+
+
+### 16. Visualising clusters with UMAP
+
+UMAP is a non-linear method that draws cells in two dimensions so that cells
+that are neighbours in the chosen representation tend to be placed close
+together.
+
+*Further Reading: [A Comparison for Dimensionality Reduction Methods of Single-Cell RNA-seq Data](https://pmc.ncbi.nlm.nih.gov/articles/PMC8021860/)*
+
+```{R}
+# Compute a 2D layout from the same 10 PCs used for clustering
+pbmc3k <- RunUMAP(pbmc3k, dims = 1:10)
+
+# One dot per cell, coloured and labelled by its current identity
+DimPlot(pbmc3k, reduction = "umap", label = TRUE, pt.size = 0.4) + NoLegend()
+```
+
+Groups of related cells, such as the T cell clusters, often appear near each
+other because their expression profiles are similar. Be careful with distances
+in UMAP: the method keeps local neighbourhoods but can distort larger
+distances, and the layout changes with its settings. Two cells being close in
+a UMAP does **not** show that they were close in the tissue, interacted, or
+are related by development.
+
+#### Q6. In a UMAP plot, what is the best interpretation of two cells being close together?
+
+- They have similar expression profiles in the representation used to build the plot
+- They were next to each other in the original tissue
+- They have interacted physically
+- One cell developed from the other
+
+
+# Part C (Core challenge): is this extra cluster a cell type?
+
+**Time:** about 35 minutes. Work in your group; rotate who types and who
+explains.
+
+Clustering at a higher resolution usually divides some clusters. Your task is
+to decide whether one extra subdivision is biologically useful **for a stated
+question**, using evidence.
+
+Carry on with the object you already have. Only if you are starting fresh (or
+an earlier step failed), load the saved object instead:
+
+```{R, eval = FALSE}
+# The object saved in section 13 (or the tutor's checkpoint copy)
+pbmc3k <- readRDS("pbmc3k_clustered.rds")
+
+# Section 13 came before UMAP, so compute the UMAP again
+pbmc3k <- RunUMAP(pbmc3k, dims = 1:10)
+```
+
+Everything else stays fixed (same QC, normalisation, PCs and neighbour graph);
+only the resolution changes.
+
+```{R, results = "hide"}
+# Cluster again at a higher resolution. Seurat keeps each result as a
+# metadata column: RNA_snn_res.0.5 (before) and RNA_snn_res.0.8 (now).
+pbmc3k <- FindClusters(pbmc3k, resolution = 0.8)
+```
+
+```{R}
+# How many cells from each resolution 0.5 cluster (rows) ended up in each
+# resolution 0.8 cluster (columns)?
+crosstab <- table(res0.5 = pbmc3k$RNA_snn_res.0.5,
+                  res0.8 = pbmc3k$RNA_snn_res.0.8)
+crosstab
+
+# The same as a fraction of each row, so big and small clusters compare
+# fairly. A row whose cells are shared between two or more columns has split.
+round(crosstab / rowSums(crosstab), 2)
+```
+
+A function can find the splits for us, row by row:
+
+```{R find-splits}
+# Which clusters at a lower resolution are divided at a higher resolution?
+# 'tab' is a cross-tabulation: rows = lower-resolution clusters, columns =
+# higher-resolution clusters. A row "splits" when at least two columns each
+# hold at least 'min_frac' of that row's cells.
+find_splits <- function(tab, min_frac = 0.1) {
+  tab <- as.matrix(tab)
+  # Fraction of each row's cells in each column (as in the table above)
+  frac <- tab / rowSums(tab)
+  # For each row, the names of the columns holding at least min_frac of it
+  pieces <- apply(frac, 1, function(r) names(r)[r >= min_frac])
+  # Keep only the rows that went into two or more columns
+  pieces[lengths(pieces) >= 2]
+}
+```
+
+```{R}
+find_splits(crosstab)
+```
+
+Choose **one** split. Look at the evidence:
+
+```{R, fig.height=4}
+# Make the resolution 0.8 clusters the current identities, so that the plots
+# and marker tests below use them
+Idents(pbmc3k) <- "RNA_snn_res.0.8"
+
+# The marker genes from section 15, plus CD8B (a second CD8+ T cell marker)
+DotPlot(pbmc3k, features = c(pbmc_markers, "CD8B")) + RotatedAxis()
+```
+
+```{R, eval = FALSE}
+# Compare the two pieces of your chosen split directly.
+# Replace "A" and "B" with the resolution 0.8 cluster numbers you chose.
+split.markers <- FindMarkers(pbmc3k, ident.1 = "A", ident.2 = "B")
+head(split.markers, 15)
+
+# Where are the pieces on the UMAP?
+DimPlot(pbmc3k, reduction = "umap", label = TRUE) + NoLegend()
+```
+
+**Your group's output (one slide or one page):**
+
+1. An annotated figure (UMAP, DotPlot or violin plot) for your chosen split.
+2. Your proposed label(s). "Unknown" or a broader label is acceptable.
+3. At least **two** observations that support your proposal.
+4. One **alternative** interpretation (e.g. a mixture of two types, a cell
+   state such as activation or stress, a technical difference such as total
+   counts, or doublets), and what evidence would tell it apart from yours.
+5. Your answer: is this subdivision useful? For what question?
+
+A neighbouring group will then ask you what evidence would distinguish your
+proposal from the alternative.
+
+**Optional, for faster groups (choose one):**
+
+- *Scientific:* test one further, justified setting (e.g. 15 PCs instead of
+  10, or another resolution) and say whether your conclusion changes.
+- *Coding:* the function below suggests a label for each cluster by scoring
+  marker genes. Run it on your resolution 0.8 clusters. Where does it agree
+  with you? Find one cluster where a scoring rule like this could be misled
+  (hint: genes shared between cell types).
+
+```{R annotate-by-markers}
+# Suggest a label for each cluster from a marker table. 'avg' is a matrix of
+# mean expression (genes x clusters). Each marker gene is scaled across
+# clusters; a cell type's score in a cluster is the mean scaled value of its
+# markers. Clusters whose best score is below 'min_score' are "Unknown".
+# This is a starting point for discussion, not a substitute for checking the
+# evidence: two types can share markers, and a cluster can contain a mixture.
+annotate_by_markers <- function(avg, markers, min_score = 1) {
+  # Scale each gene across clusters (z-scores); genes that never vary give 0
+  z <- t(scale(t(avg)))
+  z[is.na(z)] <- 0
+  # Score every cell type in every cluster: the mean z-score of its markers
+  scores <- sapply(markers, function(g) {
+    g <- intersect(g, rownames(z))
+    if (length(g) == 0) return(rep(NA_real_, ncol(z)))
+    colMeans(z[g, , drop = FALSE])
+  })
+  scores <- matrix(scores, nrow = ncol(z),
+                   dimnames = list(colnames(z), names(markers)))
+  # The best-scoring cell type per cluster, or "Unknown" if no score is high
+  best <- colnames(scores)[max.col(scores, ties.method = "first")]
+  best[apply(scores, 1, max) < min_score] <- "Unknown"
+  data.frame(cluster = rownames(scores), label = best,
+             score = round(apply(scores, 1, max), 2), row.names = NULL)
+}
+```
+
+```{R, eval = FALSE}
+# The marker table from section 15, as a list: cell type -> its genes
+markers <- list(
+  "Naive CD4+ T" = c("IL7R", "CCR7"), "CD14+ Mono" = c("CD14", "LYZ"),
+  "Memory CD4+ T" = c("IL7R", "S100A4"), "B" = "MS4A1", "CD8+ T" = "CD8A",
+  "FCGR3A+ Mono" = c("FCGR3A", "MS4A7"), "NK" = c("GNLY", "NKG7"),
+  "DC" = c("FCER1A", "CST3"), "Platelet" = "PPBP")
+
+# Normalised expression of those genes in every cell
+genes <- unique(unlist(markers))
+expr <- LayerData(pbmc3k, layer = "data")[genes, ]
+
+# Mean expression of each gene in each cluster (genes x clusters)
+clusters <- Idents(pbmc3k)
+avg <- sapply(levels(clusters),
+              function(k) Matrix::rowMeans(expr[, clusters == k, drop = FALSE]))
+
+annotate_by_markers(avg, markers)
+```
+
+
+# Part D (Core, short): a continuum as a counterexample
+
+Not every biological difference comes in separate groups. The figure below is
+a **schematic with synthetic values**, showing two marker genes changing
+smoothly as precursor cells mature (for example, oligodendrocyte precursor
+cells becoming mature oligodendrocytes).
+
+```{R continuum, fig.height=3.5, fig.cap="Schematic (synthetic values): a gradual change in expression."}
+# Plotting code: no need to follow every line.
+# SCHEMATIC with SYNTHETIC values: 200 cells along a maturation scale from 0
+# to 1. The precursor marker falls and the mature marker rises, smoothly.
+set.seed(3)
+maturity <- sort(runif(200))
+precursor_marker <- 5 * (1 - maturity) + rnorm(200, sd = 0.5)
+mature_marker <- 5 * maturity^2 + rnorm(200, sd = 0.5)
+plot(maturity, precursor_marker, pch = 19, cex = 0.6, col = "#7570b3",
+     ylim = range(c(precursor_marker, mature_marker)),
+     xlab = "Maturation (schematic)", ylab = "Expression (synthetic)",
+     main = "Where would you draw the boundaries?")
+points(maturity, mature_marker, pch = 19, cex = 0.6, col = "#e7298a")
+legend("top", legend = c("precursor marker", "mature marker"),
+       col = c("#7570b3", "#e7298a"), pch = 19, bty = "n")
+```
+
+**Discuss:** where would you put the boundaries between "precursor",
+"intermediate" and "mature"? Would different questions lead you to put them in
+different places? What do discrete labels hide here?
+
+Note: our PBMC analysis did not infer any developmental trajectory; this is a
+separate example.
+
+
+# Next: build a reference (Part E)
+
+After the break, continue with the bridge worksheet (`day1-bridge.pdf`): you
+will turn your labelled cells into a small gene-by-cell-type reference, the
+starting point for Day 2.
+
+
+# At the end of the day: exit questions
+
+Write a short answer to each:
+
+1. Explain what one zero in a count matrix means, and why it is ambiguous.
+2. Give one reason a cluster may not deserve a distinct cell type label.
+3. Describe in one or two sentences how cell type labels were assigned today.
+
+
+# References
+
+[1] Haque A, Engel J, Teichmann SA, Lönnberg T. A practical guide to single-cell RNA-sequencing for biomedical research and clinical applications. Genome Med 2017;9:75
+
+[2] Steinheuer L, Canzler S, Hackermüller J. Benchmarking scRNA-seq imputation tools with respect to network inference highlights deficits in performance at high levels of sparsity. 2021
+
+[3] Hao Y, et al. Dictionary learning for integrative, multimodal and scalable single cell analysis. Nat Biotechnol 2024;42:293–304
+
+[4] Hao Y, Hao S, et al. Integrated analysis of multimodal single cell data. Cell 2021;184:3573–3587
+
+[5] Stuart T, Butler A, et al. Comprehensive integration of single cell data. Cell 2019;177:1888–1902
+
+[6] Butler A, Hoffman P, Smibert P, Papalexi E, Satija R. Integrating single-cell transcriptomic data across different conditions, technologies, and species. Nat Biotechnol 2018;36:411–420
+
+[7] Satija R, Farrell JA, Gennert D, Schier AF, Regev A. Spatial reconstruction of single-cell gene expression data. Nat Biotechnol 2015;33:495–502
+
+[8] R Core Team. R: A Language and Environment for Statistical Computing. Vienna, Austria: R Foundation for Statistical Computing.
+
+[9] Xiang R, Wang W, Yang L, Wang S, Xu C, Chen X. A comparison for dimensionality reduction methods of single-cell RNA-seq data. Front Genet 2021;12:646936
+
+[10] Xu C, Su Z. Identification of cell types from single-cell transcriptomes using a novel clustering method. Bioinformatics 2015;31:1974–1980
+
+[11] 10x Genomics. 3k PBMCs from a Healthy Donor. Cell Ranger 1.1.0 dataset, 2016. https://www.10xgenomics.com/datasets/3-k-pbm-cs-from-a-healthy-donor-1-standard-1-1-0
